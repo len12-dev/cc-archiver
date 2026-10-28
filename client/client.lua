@@ -2,7 +2,7 @@
 -- A lancer sur un ordinateur avance (Advanced Computer) avec un modem sans fil.
 -- Le programme n'a pas de sortie : il tourne en permanence.
 
-local VERSION = "2.0.0"
+local VERSION = "2.1.0"
 local RAW_URL = "https://raw.githubusercontent.com/len12-dev/cc-archiver/main/client/client.lua"
 
 -- ---------------------------------------------------------------- mise a jour
@@ -150,41 +150,51 @@ end
 
 -- ---------------------------------------------------------------- connexion
 
--- Ordinateur : premiere connexion (identifiant + mot de passe administrateur) ou mot de passe
-local function connectComputer()
+-- Enregistrement : identifiant + code a 6 chiffres genere sur l'ordinateur d'administration
+local function pairComputer()
   while true do
     clear()
-    if not cfg.name then
-      print("=== Premiere connexion de cet ordinateur ===")
-      local name = ask("Identifiant de l'ordinateur : ")
-      local pw   = ask("Mot de passe administrateur : ", true)
-      local pw2  = ask("Confirme le mot de passe : ", true)
-      if pw ~= pw2 then
-        print("Les mots de passe ne correspondent pas.")
-      else
-        local res, err = request("register", { cname = name, cpass = pw })
-        if res then
-          cfg.name = name
-          saveCfg()
-          session.cname = name
-          session.cpass = pw
-          return
-        end
-        print("Erreur : " .. err)
-      end
-    else
-      print("=== cc-archiver ===")
-      print("Ordinateur : " .. cfg.name)
-      local pw = ask("Mot de passe administrateur : ", true)
-      local res, err = request("login", { cname = cfg.name, cpass = pw })
-      if res then
-        session.cname = cfg.name
-        session.cpass = pw
-        return
-      end
-      print("Erreur : " .. err)
+    print("=== Enregistrement de cet ordinateur ===")
+    print("Genere un code sur l'ordinateur d'administration.")
+    print("Il est valable 5 minutes.")
+    print("")
+    local name = ask("Identifiant de cet ordinateur : ")
+    local code = ask("Code : ")
+    local res, err = request("pair", { cname = name, code = code })
+    if res then
+      cfg.name = name
+      cfg.token = res.token
+      saveCfg()
+      session.cname = name
+      session.cpass = res.token
+      return
     end
-    sleep(2)
+    print("Erreur : " .. err)
+    sleep(3)
+  end
+end
+
+-- Connexion automatique avec le jeton enregistre : rien a taper
+local function connectComputer()
+  if not cfg.name or not cfg.token then
+    return pairComputer()
+  end
+  while true do
+    clear()
+    print("Connexion de " .. cfg.name .. "...")
+    local res, err = request("login", { cname = cfg.name, cpass = cfg.token })
+    if res then
+      session.cname = cfg.name
+      session.cpass = cfg.token
+      return
+    end
+    if err and err:find("inconnu") then
+      print("Erreur : " .. err)
+      sleep(3)
+      return pairComputer()
+    end
+    print("Erreur : " .. tostring(err) .. " (nouvel essai dans 5 s)")
+    sleep(5)
   end
 end
 
@@ -295,10 +305,10 @@ local function deleteDoc()
   write("Numero de l'archive a supprimer : ")
   local id = tonumber(read())
   if not id then print("Numero invalide.") pause() return end
-  local pw = ask("Mot de passe administrateur de cet ordinateur : ", true)
+  local mpass = ask("Mot de passe administrateur : ", true)
   write("Tape SUPPRIMER pour confirmer : ")
   if read() ~= "SUPPRIMER" then print("Annule.") pause() return end
-  local res, err = request("delete", { id = id, cpass = pw })
+  local res, err = request("delete", { id = id, mpass = mpass })
   print(res and "Archive supprimee." or ("Erreur : " .. err))
   pause()
 end
@@ -357,6 +367,7 @@ end
 
 -- ---------------------------------------------------------------- main
 
+math.randomseed(os.epoch("utc"))
 checkUpdate(false)
 loadCfg()
 if not openModem() then

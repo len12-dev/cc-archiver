@@ -2,7 +2,7 @@
 -- A installer sur l'ordinateur d'administration (avec un modem sans fil).
 -- Le programme n'a pas de sortie : il tourne en permanence.
 
-local VERSION = "2.0.0"
+local VERSION = "2.1.0"
 local RAW_URL = "https://raw.githubusercontent.com/len12-dev/cc-archiver/main/admin/admin.lua"
 
 -- ---------------------------------------------------------------- mise a jour
@@ -407,6 +407,38 @@ end
 
 -- ---------------------------------------------------------------- menu
 
+local function pairingCode()
+  clear()
+  local res, err = request("pairCode")
+  if not res then
+    print("Erreur : " .. err)
+  else
+    print("Code d'enregistrement : " .. res.code)
+    print("")
+    print("Valable 5 minutes.")
+    print("Sur le nouvel ordinateur, entre son identifiant et ce code.")
+  end
+  pause()
+end
+
+-- Verrouillage : seul le mot de passe administrateur rouvre la console
+local function lockConsole()
+  while true do
+    clear()
+    print("=== VERROUILLE ===")
+    print("Ordinateur : " .. cfg.name)
+    local pw = ask("Mot de passe administrateur : ", true)
+    local res = request("login", { cname = cfg.name, cpass = pw })
+    if res and res.admin then
+      session.cname = cfg.name
+      session.cpass = pw
+      return
+    end
+    print("Mot de passe incorrect.")
+    sleep(2)
+  end
+end
+
 local function menu()
   while true do
     clear()
@@ -419,6 +451,8 @@ local function menu()
     print("6. Gerer les utilisateurs")
     print("7. Connexion a distance a un ordinateur")
     print("8. Mise a jour")
+    print("9. Code d'enregistrement d'un ordinateur")
+    print("0. Verrouiller")
     write("> ")
     local c = read()
     if c == "1" then listDocs()
@@ -429,12 +463,15 @@ local function menu()
     elseif c == "6" then usersMenu()
     elseif c == "7" then remoteMenu()
     elseif c == "8" then checkUpdate(true)
+    elseif c == "9" then pairingCode()
+    elseif c == "0" then lockConsole()
     end
   end
 end
 
 -- ---------------------------------------------------------------- main
 
+math.randomseed(os.epoch("utc"))
 checkUpdate(false)
 loadCfg()
 if not openModem() then

@@ -2,7 +2,7 @@
 -- A installer sur l'ordinateur EliteCompute (avec un modem sans fil).
 -- Donnees : /archives/docs/<id>.dat, /archives/computers.dat, /archives/users.dat
 
-local VERSION = "2.0.0"
+local VERSION = "2.1.0"
 local RAW_URL = "https://raw.githubusercontent.com/len12-dev/cc-archiver/main/server/server.lua"
 
 -- ---------------------------------------------------------------- mise a jour
@@ -188,6 +188,32 @@ local function listDocs()
   return out
 end
 
+-- ---------------------------------------------------------------- enregistrement par code
+
+local pairing = nil -- { code = "123456", expires = ms } : un seul code actif a la fois
+local TOKEN_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+local function randomToken(n)
+  local t = {}
+  for i = 1, n do
+    local k = math.random(1, #TOKEN_CHARS)
+    t[i] = TOKEN_CHARS:sub(k, k)
+  end
+  return table.concat(t)
+end
+
+-- L'ordinateur d'administration : son mot de passe sert aussi de mot de passe maitre
+local function adminEntry()
+  for _, c in pairs(computers) do
+    if c.admin then return c end
+  end
+  return nil
+end
+
+local function isMaster(password)
+  return checkPassword(adminEntry(), password)
+end
+
 -- ---------------------------------------------------------------- actions
 
 local handlers = {}
@@ -198,6 +224,9 @@ end
 
 -- Premiere connexion d'un ordinateur. role = "admin" possible une seule fois.
 function handlers.register(req)
+  if req.role ~= "admin" then
+    return deny("Les ordinateurs s'enregistrent avec un code d'enregistrement")
+  end
   if not validName(req.cname) then
     return deny("Identifiant invalide (lettres, chiffres, _ et -, 24 max)")
   end
@@ -207,19 +236,46 @@ function handlers.register(req)
   if computers[req.cname] then
     return deny("Cet identifiant existe deja")
   end
-  local wantAdmin = req.role == "admin"
-  if wantAdmin then
-    for _, c in pairs(computers) do
-      if c.admin then
-        return deny("Un ordinateur d'administration existe deja")
-      end
-    end
+  if adminEntry() then
+    return deny("Un ordinateur d'administration existe deja")
   end
   local entry = makeEntry(req.cpass)
-  entry.admin = wantAdmin
+  entry.admin = true
   computers[req.cname] = entry
   writeFile(COMPUTERS_FILE, computers)
-  return { ok = true, admin = wantAdmin }
+  return { ok = true, admin = true }
+end
+
+-- Genere un code a 6 chiffres valable 5 minutes (administration uniquement)
+function handlers.pairCode(req)
+  local e = requireAdmin(req)
+  if e then return e end
+  local code = string.format("%06d", math.random(0, 999999))
+  pairing = { code = code, expires = now() + 5 * 60 * 1000 }
+  return { ok = true, code = code }
+end
+
+-- Un nouvel ordinateur entre son identifiant et le code : il recoit un jeton
+function handlers.pair(req)
+  if not validName(req.cname) then
+    return deny("Identifiant invalide (lettres, chiffres, _ et -, 24 max)")
+  end
+  if computers[req.cname] then
+    return deny("Cet identifiant existe deja")
+  end
+  if not pairing or now() > pairing.expires then
+    return deny("Code expire ou absent : genere-en un nouveau sur l'ordinateur d'administration")
+  end
+  if tostring(req.code) ~= pairing.code then
+    return deny("Code incorrect")
+  end
+  pairing = nil
+  local token = randomToken(24)
+  local entry = makeEntry(token)
+  entry.admin = false
+  computers[req.cname] = entry
+  writeFile(COMPUTERS_FILE, computers)
+  return { ok = true, token = token }
 end
 
 function handlers.login(req)
@@ -298,9 +354,10 @@ end
 function handlers.delete(req)
   local doc = loadDoc(req.id)
   if not doc then return deny("Archive introuvable") end
-  local allowed = isAdmin(req) or (canUseArchives(req) and doc.owner == req.cname)
+  -- Administrateur, ou utilisateur connecte sur un ordinateur avec le mot de passe maitre
+  local allowed = isAdmin(req) or (canUseArchives(req) and isMaster(req.mpass))
   if not allowed then
-    return deny("Seul l'ordinateur qui a cree l'archive ou l'administrateur peut la supprimer")
+    return deny("Mot de passe administrateur requis pour supprimer")
   end
   fs.delete(docPath(doc.id))
   return { ok = true }
@@ -400,6 +457,7 @@ local function migrate()
   end
 end
 
+math.randomseed(os.epoch("utc"))
 checkUpdate(false)
 ensureDirs()
 migrate()
