@@ -7,12 +7,14 @@ local FILES = {
   ["1"] = { path = "server/server.lua", target = "/cc-archiver-server.lua" },
   ["2"] = { path = "client/client.lua", target = "/cc-archiver-client.lua" },
   ["3"] = { path = "admin/admin.lua",   target = "/cc-archiver-admin.lua" },
+  ["4"] = { path = "print/print.lua",   target = "/cc-archiver-print.lua" },
 }
 
 print("cc-archiver - installation")
 print("1. Serveur (EliteCompute)")
 print("2. Client (ordinateur avance)")
 print("3. Ordinateur d'administration")
+print("4. Serveur d'impression")
 write("Choix : ")
 local choice = read()
 local entry = FILES[choice]

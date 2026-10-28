@@ -1,8 +1,8 @@
 -- cc-archiver : SERVEUR
 -- A installer sur l'ordinateur EliteCompute (avec un modem sans fil).
--- Donnees : /archives/docs/<id>.dat, /archives/computers.dat, /archives/users.dat
+-- Donnees : /archives/docs/, computers.dat, users.dat, counter.dat, logs.txt
 
-local VERSION = "2.1.0"
+local VERSION = "2.2.0"
 local RAW_URL = "https://raw.githubusercontent.com/len12-dev/cc-archiver/main/server/server.lua"
 
 -- ---------------------------------------------------------------- mise a jour
@@ -20,11 +20,14 @@ local function checkUpdate(manual)
   local code = res.readAll()
   res.close()
   local remote = code:match('local VERSION%s*=%s*"([^"]+)"')
-  if not remote or remote == VERSION then
-    if manual then
-      print("Deja a jour (version " .. VERSION .. ").")
-      sleep(2)
-    end
+  if not remote then
+    print("Verification impossible (fichier distant illisible).")
+    sleep(2)
+    return
+  end
+  if remote == VERSION then
+    print("Version " .. VERSION .. " : deja a jour.")
+    sleep(manual and 2 or 1)
     return
   end
   if not load(code) then
@@ -48,12 +51,16 @@ end
 
 local PROTOCOL  = "cc-archiver"
 local HOST_NAME = "cc-archiver-server"
+local LOGS      = "cc-archiver-logs"
 
 local ROOT           = "/archives"
 local DOCS_DIR       = ROOT .. "/docs"
 local COMPUTERS_FILE = ROOT .. "/computers.dat"
 local USERS_FILE     = ROOT .. "/users.dat"
 local COUNTER_FILE   = ROOT .. "/counter.dat"
+local LOG_FILE      = ROOT .. "/logs.txt"
+local LOG_MAX_BYTES = 200000
+local LOG_KEEP_LINES = 1000
 
 -- ---------------------------------------------------------------- utilitaires
 
@@ -106,6 +113,17 @@ local function checkPassword(entry, password)
     and hashPassword(entry.salt, password) == entry.hash
 end
 
+local TOKEN_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+local function randomToken(n)
+  local t = {}
+  for i = 1, n do
+    local k = math.random(1, #TOKEN_CHARS)
+    t[i] = TOKEN_CHARS:sub(k, k)
+  end
+  return table.concat(t)
+end
+
 local function validName(name)
   return type(name) == "string" and #name > 0 and #name <= 24 and name:match("^[%w_%-]+$") ~= nil
 end
@@ -118,9 +136,53 @@ local function deny(msg)
   return { ok = false, error = msg }
 end
 
+-- ---------------------------------------------------------------- journal
+
+local logSubs = {} -- [id d'ordinateur] = true : administrateurs qui suivent le journal en direct
+
+local function readTail(n)
+  local lines = {}
+  if fs.exists(LOG_FILE) then
+    local h = fs.open(LOG_FILE, "r")
+    local l = h.readLine()
+    while l do
+      table.insert(lines, l)
+      l = h.readLine()
+    end
+    h.close()
+  end
+  local out = {}
+  for i = math.max(1, #lines - n + 1), #lines do
+    table.insert(out, lines[i])
+  end
+  return out
+end
+
+local function rotateLog()
+  local kept = readTail(LOG_KEEP_LINES)
+  local h = fs.open(LOG_FILE, "w")
+  for _, l in ipairs(kept) do h.writeLine(l) end
+  h.close()
+end
+
+-- Affiche la ligne sur le serveur, la garde dans le fichier et la envoie aux administrateurs suivis
+local function logLine(text)
+  local line = os.date("%d/%m %H:%M:%S") .. "  " .. text
+  print(line)
+  local h = fs.open(LOG_FILE, "a")
+  h.writeLine(line)
+  h.close()
+  for id in pairs(logSubs) do
+    rednet.send(id, { line = line }, LOGS)
+  end
+  if fs.getSize(LOG_FILE) > LOG_MAX_BYTES then
+    rotateLog()
+  end
+end
+
 -- ---------------------------------------------------------------- comptes
 
-local computers = {} -- [nom] = { salt, hash, admin }
+local computers = {} -- [nom] = { salt, hash, admin, role }
 local users = {}     -- [nom] = { salt, hash }
 
 local function isComputer(req)
@@ -151,6 +213,23 @@ local function requireAdmin(req)
   end
   return nil
 end
+
+-- L'ordinateur d'administration : son mot de passe sert aussi de mot de passe maitre
+local function adminEntry()
+  for _, c in pairs(computers) do
+    if c.admin then return c end
+  end
+  return nil
+end
+
+local function isMaster(password)
+  return checkPassword(adminEntry(), password)
+end
+
+-- ---------------------------------------------------------------- enregistrement et tickets
+
+local pairing = nil -- { code, expires, kind } : un seul code actif a la fois
+local tickets = {}  -- [jeton] = { docId, user, computer, expires }
 
 -- ---------------------------------------------------------------- archives
 
@@ -188,30 +267,9 @@ local function listDocs()
   return out
 end
 
--- ---------------------------------------------------------------- enregistrement par code
-
-local pairing = nil -- { code = "123456", expires = ms } : un seul code actif a la fois
-local TOKEN_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-
-local function randomToken(n)
-  local t = {}
-  for i = 1, n do
-    local k = math.random(1, #TOKEN_CHARS)
-    t[i] = TOKEN_CHARS:sub(k, k)
-  end
-  return table.concat(t)
-end
-
--- L'ordinateur d'administration : son mot de passe sert aussi de mot de passe maitre
-local function adminEntry()
-  for _, c in pairs(computers) do
-    if c.admin then return c end
-  end
-  return nil
-end
-
-local function isMaster(password)
-  return checkPassword(adminEntry(), password)
+-- Qui a fait la derniere modification (sert a resoudre les conflits)
+local function stamp(req)
+  return { admin = isAdmin(req), by = req.uname or req.cname, at = now() }
 end
 
 -- ---------------------------------------------------------------- actions
@@ -222,7 +280,7 @@ function handlers.ping()
   return { ok = true }
 end
 
--- Premiere connexion d'un ordinateur. role = "admin" possible une seule fois.
+-- Premier enregistrement : l'ordinateur d'administration uniquement
 function handlers.register(req)
   if req.role ~= "admin" then
     return deny("Les ordinateurs s'enregistrent avec un code d'enregistrement")
@@ -241,18 +299,20 @@ function handlers.register(req)
   end
   local entry = makeEntry(req.cpass)
   entry.admin = true
+  entry.role = "admin"
   computers[req.cname] = entry
   writeFile(COMPUTERS_FILE, computers)
   return { ok = true, admin = true }
 end
 
--- Genere un code a 6 chiffres valable 5 minutes (administration uniquement)
+-- Genere un code a 6 chiffres valable 5 minutes (client ou serveur d'impression)
 function handlers.pairCode(req)
   local e = requireAdmin(req)
   if e then return e end
+  local kind = (req.kind == "print") and "print" or "client"
   local code = string.format("%06d", math.random(0, 999999))
-  pairing = { code = code, expires = now() + 5 * 60 * 1000 }
-  return { ok = true, code = code }
+  pairing = { code = code, expires = now() + 5 * 60 * 1000, kind = kind }
+  return { ok = true, code = code, kind = kind }
 end
 
 -- Un nouvel ordinateur entre son identifiant et le code : il recoit un jeton
@@ -269,10 +329,12 @@ function handlers.pair(req)
   if tostring(req.code) ~= pairing.code then
     return deny("Code incorrect")
   end
+  local kind = pairing.kind
   pairing = nil
   local token = randomToken(24)
   local entry = makeEntry(token)
   entry.admin = false
+  entry.role = kind
   computers[req.cname] = entry
   writeFile(COMPUTERS_FILE, computers)
   return { ok = true, token = token }
@@ -327,6 +389,7 @@ function handlers.create(req)
     id = nextId(), title = req.title, chest = req.chest,
     owner = req.cname, author = req.uname or req.cname,
     created = now(), updated = now(), lines = {},
+    lastBy = stamp(req),
   }
   saveDoc(doc)
   return { ok = true, id = doc.id }
@@ -345,21 +408,97 @@ function handlers.write(req)
     doc.lines[i] = tostring(line)
   end
   doc.updated = now()
+  doc.lastBy = stamp(req)
   saveDoc(doc)
   return { ok = true }
 end
 
--- Suppression : l'administrateur peut tout supprimer ;
--- un ordinateur ne supprime que les archives qu'il a creees.
+-- Ajout en fin d'archive (envoye apres une periode hors ligne).
+-- Conflit : si l'administrateur a modifie l'archive depuis la base de l'ajout, l'ajout est refuse.
+-- Deux utilisateurs qui ajoutent ne se contredisent pas : les deux ajouts sont gardes.
+function handlers.append(req)
+  if not canUseArchives(req) then return denyNoAccess() end
+  local doc = loadDoc(req.id)
+  if not doc then return deny("Conflit : archive supprimee") end
+  if type(req.lines) ~= "table" then return deny("Contenu invalide") end
+  if type(req.base) == "number" and doc.updated > req.base and doc.lastBy and doc.lastBy.admin then
+    return deny("Conflit : l'administrateur a modifie l'archive, ajout refuse")
+  end
+  for _, l in ipairs(req.lines) do
+    table.insert(doc.lines, tostring(l))
+  end
+  doc.updated = now()
+  doc.lastBy = stamp(req)
+  saveDoc(doc)
+  return { ok = true }
+end
+
+-- Suppression : administrateur, ou utilisateur connecte avec le mot de passe maitre
 function handlers.delete(req)
   local doc = loadDoc(req.id)
   if not doc then return deny("Archive introuvable") end
-  -- Administrateur, ou utilisateur connecte sur un ordinateur avec le mot de passe maitre
   local allowed = isAdmin(req) or (canUseArchives(req) and isMaster(req.mpass))
   if not allowed then
     return deny("Mot de passe administrateur requis pour supprimer")
   end
   fs.delete(docPath(doc.id))
+  return { ok = true }
+end
+
+-- Impression : le serveur autorise et enregistre ; le serveur d'impression recupere le contenu
+function handlers.printRequest(req)
+  if not canUseArchives(req) then return denyNoAccess() end
+  local doc = loadDoc(req.id)
+  if not doc then return deny("Archive introuvable") end
+  local token = randomToken(16)
+  tickets[token] = {
+    docId = doc.id,
+    user = req.uname or "administrateur",
+    computer = req.cname,
+    expires = now() + 10 * 60 * 1000,
+  }
+  return { ok = true, ticket = token }
+end
+
+-- Serveur d'impression : echange un ticket contre le contenu (usage unique)
+function handlers.redeemTicket(req)
+  local c = computers[req.cname]
+  if not isComputer(req) or not c or c.role ~= "print" then
+    return deny("Reserve aux serveurs d'impression")
+  end
+  if type(req.ticket) ~= "string" then
+    return deny("Ticket invalide")
+  end
+  local t = tickets[req.ticket]
+  tickets[req.ticket] = nil
+  if not t or now() > t.expires then
+    return deny("Ticket invalide ou expire")
+  end
+  local doc = loadDoc(t.docId)
+  if not doc then return deny("Archive introuvable") end
+  return { ok = true, title = doc.title, lines = doc.lines, user = t.user, computer = t.computer }
+end
+
+-- ---------------------------------------------------------------- journal (admin)
+
+function handlers.logTail(req)
+  local e = requireAdmin(req)
+  if e then return e end
+  local n = math.min(tonumber(req.n) or 50, 500)
+  return { ok = true, lines = readTail(n) }
+end
+
+function handlers.logSubscribe(req)
+  local e = requireAdmin(req)
+  if e then return e end
+  logSubs[req._sender] = true
+  return { ok = true, lines = readTail(30) }
+end
+
+function handlers.logUnsubscribe(req)
+  local e = requireAdmin(req)
+  if e then return e end
+  logSubs[req._sender] = nil
   return { ok = true }
 end
 
@@ -425,14 +564,21 @@ end
 
 -- ---------------------------------------------------------------- boucle
 
-local function handle(req)
+local function handle(req, sender)
   if type(req) ~= "table" or type(req.action) ~= "string" or not handlers[req.action] then
+    logLine("requete inconnue (ordinateur #" .. tostring(sender) .. ")")
     return deny("Requete inconnue")
   end
+  req._sender = sender
   local ok, res = pcall(handlers[req.action], req)
   if not ok then
-    return deny("Erreur serveur : " .. tostring(res))
+    res = deny("Erreur serveur : " .. tostring(res))
   end
+  local who = tostring(req.cname or "?")
+  if req.uname then who = who .. "/" .. tostring(req.uname) end
+  logLine(who .. "  " .. req.action
+    .. (req.id and (" #" .. tostring(req.id)) or "")
+    .. (res.ok and "  OK" or ("  ECHEC : " .. tostring(res.error))))
   return res
 end
 
@@ -450,7 +596,10 @@ end
 local function migrate()
   if not fs.exists(COMPUTERS_FILE) and fs.exists(USERS_FILE) then
     local old = readFile(USERS_FILE, {})
-    for _, c in pairs(old) do c.admin = false end
+    for _, c in pairs(old) do
+      c.admin = false
+      c.role = "client"
+    end
     writeFile(COMPUTERS_FILE, old)
     writeFile(USERS_FILE, {})
     print("Migration : anciens ordinateurs convertis.")
@@ -465,11 +614,11 @@ computers = readFile(COMPUTERS_FILE, {})
 users = readFile(USERS_FILE, {})
 local side = openModem()
 rednet.host(PROTOCOL, HOST_NAME)
-print("cc-archiver serveur " .. VERSION .. " demarre (modem : " .. side .. ")")
+logLine("serveur " .. VERSION .. " demarre (modem : " .. side .. ")")
 
 while true do
   local sender, msg = rednet.receive(PROTOCOL)
-  local res = handle(msg)
+  local res = handle(msg, sender)
   if type(msg) == "table" then res.rid = msg.rid end
   rednet.send(sender, res, PROTOCOL)
 end

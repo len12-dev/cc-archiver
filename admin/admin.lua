@@ -2,7 +2,7 @@
 -- A installer sur l'ordinateur d'administration (avec un modem sans fil).
 -- Le programme n'a pas de sortie : il tourne en permanence.
 
-local VERSION = "2.1.0"
+local VERSION = "2.2.0"
 local RAW_URL = "https://raw.githubusercontent.com/len12-dev/cc-archiver/main/admin/admin.lua"
 
 -- ---------------------------------------------------------------- mise a jour
@@ -20,11 +20,14 @@ local function checkUpdate(manual)
   local code = res.readAll()
   res.close()
   local remote = code:match('local VERSION%s*=%s*"([^"]+)"')
-  if not remote or remote == VERSION then
-    if manual then
-      print("Deja a jour (version " .. VERSION .. ").")
-      sleep(2)
-    end
+  if not remote then
+    print("Verification impossible (fichier distant illisible).")
+    sleep(2)
+    return
+  end
+  if remote == VERSION then
+    print("Version " .. VERSION .. " : deja a jour.")
+    sleep(manual and 2 or 1)
     return
   end
   if not load(code) then
@@ -49,11 +52,13 @@ end
 local PROTOCOL  = "cc-archiver"
 local HOST_NAME = "cc-archiver-server"
 local REMOTE    = "cc-archiver-remote"
+local PRINT     = "cc-archiver-print"
+local LOGS      = "cc-archiver-logs"
 local CONFIG    = "/archives-admin.cfg"
 local TIMEOUT   = 5
 
-local cfg = {}      -- { name = "..." }
-local session = {}  -- cname, cpass
+local cfg = {}      -- { name }
+local session = {}  -- cname, cpass (mot de passe administrateur)
 
 -- ---------------------------------------------------------------- utilitaires
 
@@ -185,7 +190,37 @@ local function connect()
   end
 end
 
--- ---------------------------------------------------------------- archives (libres)
+-- Verrouillage : seul le mot de passe administrateur rouvre la console
+local function lockConsole()
+  while true do
+    clear()
+    print("=== VERROUILLE ===")
+    print("Ordinateur : " .. cfg.name)
+    local pw = ask("Mot de passe administrateur : ", true)
+    local res = request("login", { cname = cfg.name, cpass = pw })
+    if res and res.admin then
+      session.cname = cfg.name
+      session.cpass = pw
+      return
+    end
+    print("Mot de passe incorrect.")
+    sleep(2)
+  end
+end
+
+-- ---------------------------------------------------------------- archives
+
+local function showDoc(d, extra)
+  print(("== [%d] %s =="):format(d.id, d.title))
+  print("Coffre : " .. d.chest .. "   Ordinateur : " .. d.owner .. "   Auteur : " .. (d.author or "?"))
+  print("----------------------------")
+  local text = table.concat(d.lines or {}, "\n")
+  if text == "" then
+    print("(vide)")
+  else
+    textutils.pagedPrint(text)
+  end
+end
 
 local function listDocs()
   clear()
@@ -211,15 +246,7 @@ local function readDoc()
   if not res then
     print("Erreur : " .. err)
   else
-    local d = res.doc
-    print(("== [%d] %s =="):format(d.id, d.title))
-    print("Coffre : " .. d.chest .. "   Ordinateur : " .. d.owner .. "   Auteur : " .. (d.author or "?"))
-    print("----------------------------")
-    if #d.lines == 0 then
-      print("(vide)")
-    else
-      textutils.pagedPrint(table.concat(d.lines, "\n"))
-    end
+    showDoc(res.doc)
   end
   pause()
 end
@@ -236,11 +263,7 @@ local function createDoc()
   if not res then print("Erreur : " .. err) pause() return end
   local lines = readLines()
   local w, werr = request("write", { id = res.id, lines = lines })
-  if w then
-    print("Archive #" .. res.id .. " creee.")
-  else
-    print("Archive #" .. res.id .. " creee, mais contenu non enregistre : " .. werr)
-  end
+  print(w and ("Archive #" .. res.id .. " creee.") or ("Archive #" .. res.id .. " creee, contenu non enregistre : " .. werr))
   pause()
 end
 
@@ -253,16 +276,17 @@ local function editDoc()
   if not res then print("Erreur : " .. err) pause() return end
   print("1 = ajouter a la fin   2 = tout reecrire   autre = annuler")
   local choice = read()
-  local lines
   if choice == "1" then
-    lines = readLines(res.doc.lines)
+    local newLines = readLines({})
+    local w, werr = request("append", { id = id, lines = newLines, base = res.doc.updated })
+    print(w and "Archive mise a jour." or ("Erreur : " .. werr))
   elseif choice == "2" then
-    lines = readLines({})
+    local lines = readLines({})
+    local w, werr = request("write", { id = id, lines = lines })
+    print(w and "Archive mise a jour." or ("Erreur : " .. werr))
   else
     return
   end
-  local w, werr = request("write", { id = id, lines = lines })
-  print(w and "Archive mise a jour." or ("Erreur : " .. werr))
   pause()
 end
 
@@ -276,6 +300,97 @@ local function deleteDoc()
   local res, err = request("delete", { id = id })
   print(res and "Archive supprimee." or ("Erreur : " .. err))
   pause()
+end
+
+-- ---------------------------------------------------------------- impression
+
+local function findStation()
+  local rid = randomId()
+  rednet.broadcast({ cmd = "query", rid = rid }, PRINT)
+  local timer = os.startTimer(3)
+  while true do
+    local ev, p1, p2, p3 = os.pullEvent()
+    if ev == "timer" and p1 == timer then
+      return nil
+    end
+    if ev == "rednet_message" and p3 == PRINT and type(p2) == "table" and p2.rid == rid and p2.ok then
+      os.cancelTimer(timer)
+      return p1
+    end
+  end
+end
+
+local function printDoc()
+  clear()
+  write("Numero de l'archive a imprimer : ")
+  local id = tonumber(read())
+  if not id then print("Numero invalide.") pause() return end
+  local t, err = request("printRequest", { id = id })
+  if not t then
+    print("Erreur : " .. err)
+    pause()
+    return
+  end
+  local stationId = findStation()
+  if not stationId then
+    print("Aucun serveur d'impression disponible.")
+    pause()
+    return
+  end
+  local rid = randomId()
+  rednet.send(stationId, { cmd = "job", rid = rid, ticket = t.ticket }, PRINT)
+  local ack = waitReply(rid, PRINT, 10)
+  if ack and ack.ok then
+    print("Envoye a l'imprimante.")
+  else
+    print("Erreur : " .. ((ack and ack.error) or "pas de reponse"))
+  end
+  pause()
+end
+
+-- ---------------------------------------------------------------- journal
+
+local function historyLog()
+  clear()
+  local res, err = request("logTail", { n = 50 })
+  if not res then print("Erreur : " .. err) pause() return end
+  for _, l in ipairs(res.lines) do print(l) end
+  pause()
+end
+
+-- Journal en direct : affiche les lignes au fur et a mesure, Entree pour arreter
+local function liveLog()
+  clear()
+  local res, err = request("logSubscribe")
+  if not res then print("Erreur : " .. err) pause() return end
+  for _, l in ipairs(res.lines) do print(l) end
+  print("--- en direct : Entree pour arreter ---")
+  parallel.waitForAny(
+    function()
+      while true do
+        local _, msg = rednet.receive(LOGS)
+        if type(msg) == "table" and msg.line then print(msg.line) end
+      end
+    end,
+    function() read() end
+  )
+  request("logUnsubscribe")
+end
+
+local function journalMenu()
+  while true do
+    clear()
+    print("=== Journal du serveur ===")
+    print("1. Historique (50 dernieres lignes)")
+    print("2. En direct")
+    print("0. Retour")
+    write("> ")
+    local c = read()
+    if c == "0" then return
+    elseif c == "1" then historyLog()
+    elseif c == "2" then liveLog()
+    end
+  end
 end
 
 -- ---------------------------------------------------------------- utilisateurs
@@ -339,6 +454,29 @@ local function usersMenu()
       pause()
     end
   end
+end
+
+-- ---------------------------------------------------------------- enregistrement
+
+local function pairingCode()
+  clear()
+  print("Quel type d'ordinateur ?")
+  print("1. Ordinateur client")
+  print("2. Serveur d'impression")
+  write("> ")
+  local kind = (read() == "2") and "print" or "client"
+  local res, err = request("pairCode", { kind = kind })
+  clear()
+  if not res then
+    print("Erreur : " .. err)
+  else
+    print("Code d'enregistrement : " .. res.code)
+    print("")
+    print("Type : " .. (kind == "print" and "serveur d'impression" or "ordinateur client"))
+    print("Valable 5 minutes.")
+    print("Sur le nouvel ordinateur, entre son identifiant et ce code.")
+  end
+  pause()
 end
 
 -- ---------------------------------------------------------------- distance
@@ -407,38 +545,6 @@ end
 
 -- ---------------------------------------------------------------- menu
 
-local function pairingCode()
-  clear()
-  local res, err = request("pairCode")
-  if not res then
-    print("Erreur : " .. err)
-  else
-    print("Code d'enregistrement : " .. res.code)
-    print("")
-    print("Valable 5 minutes.")
-    print("Sur le nouvel ordinateur, entre son identifiant et ce code.")
-  end
-  pause()
-end
-
--- Verrouillage : seul le mot de passe administrateur rouvre la console
-local function lockConsole()
-  while true do
-    clear()
-    print("=== VERROUILLE ===")
-    print("Ordinateur : " .. cfg.name)
-    local pw = ask("Mot de passe administrateur : ", true)
-    local res = request("login", { cname = cfg.name, cpass = pw })
-    if res and res.admin then
-      session.cname = cfg.name
-      session.cpass = pw
-      return
-    end
-    print("Mot de passe incorrect.")
-    sleep(2)
-  end
-end
-
 local function menu()
   while true do
     clear()
@@ -451,7 +557,9 @@ local function menu()
     print("6. Gerer les utilisateurs")
     print("7. Connexion a distance a un ordinateur")
     print("8. Mise a jour")
-    print("9. Code d'enregistrement d'un ordinateur")
+    print("9. Code d'enregistrement")
+    print("A. Journal du serveur")
+    print("P. Imprimer une archive")
     print("0. Verrouiller")
     write("> ")
     local c = read()
@@ -464,6 +572,8 @@ local function menu()
     elseif c == "7" then remoteMenu()
     elseif c == "8" then checkUpdate(true)
     elseif c == "9" then pairingCode()
+    elseif c == "A" or c == "a" then journalMenu()
+    elseif c == "P" or c == "p" then printDoc()
     elseif c == "0" then lockConsole()
     end
   end
