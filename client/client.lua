@@ -2,7 +2,7 @@
 -- A lancer sur un ordinateur avance (Advanced Computer) avec un modem sans fil.
 -- Le programme n'a pas de sortie : il tourne en permanence.
 
-local VERSION = "2.1.1"
+local VERSION = "2.1.0"
 local RAW_URL = "https://raw.githubusercontent.com/len12-dev/cc-archiver/main/client/client.lua"
 
 -- ---------------------------------------------------------------- mise a jour
@@ -20,14 +20,11 @@ local function checkUpdate(manual)
   local code = res.readAll()
   res.close()
   local remote = code:match('local VERSION%s*=%s*"([^"]+)"')
-  if not remote then
-    print("Verification impossible (fichier distant illisible).")
-    sleep(2)
-    return
-  end
-  if remote == VERSION then
-    print("Version " .. VERSION .. " : deja a jour.")
-    sleep(manual and 2 or 1)
+  if not remote or remote == VERSION then
+    if manual then
+      print("Deja a jour (version " .. VERSION .. ").")
+      sleep(2)
+    end
     return
   end
   if not load(code) then
