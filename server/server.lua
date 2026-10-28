@@ -1,51 +1,59 @@
 -- cc-archiver : SERVEUR
 -- A installer sur l'ordinateur EliteCompute (avec un modem sans fil).
--- Stocke les archives dans /archives/docs/ et les comptes dans /archives/users.dat
+-- Donnees : /archives/docs/<id>.dat, /archives/computers.dat, /archives/users.dat
+
+local VERSION = "2.0.0"
+local RAW_URL = "https://raw.githubusercontent.com/len12-dev/cc-archiver/main/server/server.lua"
 
 -- ---------------------------------------------------------------- mise a jour
 
-local VERSION = "1.1.0"
-local RAW_URL = "https://raw.githubusercontent.com/len12-dev/cc-archiver/main/server/server.lua"
-
--- Telecharge la version du depot ; si elle est plus recente, remplace ce fichier et relance.
--- Retourne true si le programme a ete mis a jour (le script courant doit alors s'arreter).
-local function checkUpdate()
+-- Telecharge la version du depot. Si elle est plus recente, remplace ce fichier et redemarre.
+-- manual = true : affiche aussi un message quand il n'y a rien a faire.
+local function checkUpdate(manual)
   local own = shell.resolve(shell.getRunningProgram())
   local res = http.get(RAW_URL .. "?t=" .. os.epoch("utc"))
   if not res then
     print("Pas de connexion au depot, version " .. VERSION .. " conservee.")
-    sleep(1)
-    return false
+    sleep(2)
+    return
   end
   local code = res.readAll()
   res.close()
   local remote = code:match('local VERSION%s*=%s*"([^"]+)"')
-  if not remote or remote == VERSION then return false end
+  if not remote or remote == VERSION then
+    if manual then
+      print("Deja a jour (version " .. VERSION .. ").")
+      sleep(2)
+    end
+    return
+  end
   if not load(code) then
     print("Mise a jour " .. remote .. " invalide, ignoree.")
     sleep(2)
-    return false
+    return
   end
-  print("Mise a jour " .. VERSION .. " -> " .. remote .. "...")
+  print("Mise a jour " .. VERSION .. " -> " .. remote)
   local tmp = own .. ".new"
   local h = fs.open(tmp, "w")
   h.write(code)
   h.close()
   fs.delete(own)
   fs.move(tmp, own)
-  print("Installee. Lancement...")
-  sleep(1)
-  shell.run(own)
-  return true
+  print("Installee. Redemarrage...")
+  sleep(2)
+  os.reboot()
 end
+
+-- ---------------------------------------------------------------- constantes
 
 local PROTOCOL  = "cc-archiver"
 local HOST_NAME = "cc-archiver-server"
 
-local ROOT         = "/archives"
-local DOCS_DIR     = ROOT .. "/docs"
-local USERS_FILE   = ROOT .. "/users.dat"
-local COUNTER_FILE = ROOT .. "/counter.dat"
+local ROOT           = "/archives"
+local DOCS_DIR       = ROOT .. "/docs"
+local COMPUTERS_FILE = ROOT .. "/computers.dat"
+local USERS_FILE     = ROOT .. "/users.dat"
+local COUNTER_FILE   = ROOT .. "/counter.dat"
 
 -- ---------------------------------------------------------------- utilitaires
 
@@ -68,8 +76,11 @@ local function ensureDirs()
   if not fs.exists(DOCS_DIR) then fs.makeDir(DOCS_DIR) end
 end
 
--- Hash sale maison : suffisant pour un reseau local de Minecraft,
--- NON cryptographique (ne pas reutiliser ce mot de passe ailleurs).
+local function now()
+  return os.epoch("utc")
+end
+
+-- Hash sale maison : suffisant pour un reseau de jeu, NON cryptographique.
 local function hashPassword(salt, password)
   local s = salt .. ":" .. password
   local h1, h2 = 5381, 0
@@ -85,26 +96,60 @@ local function newSalt()
   return string.format("%08x%08x", math.random(0, 4294967295), os.epoch("utc") % 4294967296)
 end
 
-local function now()
-  return os.epoch("utc")
+local function makeEntry(password)
+  local salt = newSalt()
+  return { salt = salt, hash = hashPassword(salt, password) }
+end
+
+local function checkPassword(entry, password)
+  return entry ~= nil and type(password) == "string"
+    and hashPassword(entry.salt, password) == entry.hash
+end
+
+local function validName(name)
+  return type(name) == "string" and #name > 0 and #name <= 24 and name:match("^[%w_%-]+$") ~= nil
+end
+
+local function validPassword(p)
+  return type(p) == "string" and #p >= 4
+end
+
+local function deny(msg)
+  return { ok = false, error = msg }
 end
 
 -- ---------------------------------------------------------------- comptes
 
-local users -- { [nom] = { salt = "...", hash = "..." } }
+local computers = {} -- [nom] = { salt, hash, admin }
+local users = {}     -- [nom] = { salt, hash }
 
-local function authenticate(name, password)
-  if type(name) ~= "string" or type(password) ~= "string" then
-    return false, "Identifiant ou mot de passe manquant"
+local function isComputer(req)
+  return checkPassword(computers[req.cname], req.cpass)
+end
+
+local function isAdmin(req)
+  local c = computers[req.cname]
+  return c ~= nil and c.admin == true and checkPassword(c, req.cpass)
+end
+
+local function isUser(req)
+  return checkPassword(users[req.uname], req.upass)
+end
+
+-- Lire, creer, modifier : administrateur, ou ordinateur enregistre + utilisateur connecte
+local function canUseArchives(req)
+  return isAdmin(req) or (isComputer(req) and isUser(req))
+end
+
+local function denyNoAccess()
+  return deny("Acces refuse : connexion utilisateur requise")
+end
+
+local function requireAdmin(req)
+  if not isAdmin(req) then
+    return deny("Reserve a l'ordinateur d'administration")
   end
-  local u = users[name]
-  if not u then
-    return false, "Ordinateur inconnu : enregistre-le d'abord"
-  end
-  if hashPassword(u.salt, password) ~= u.hash then
-    return false, "Mot de passe incorrect"
-  end
-  return true
+  return nil
 end
 
 -- ---------------------------------------------------------------- archives
@@ -151,66 +196,93 @@ function handlers.ping()
   return { ok = true }
 end
 
--- Premiere connexion d'un ordinateur : identifiant + mot de passe administrateur
+-- Premiere connexion d'un ordinateur. role = "admin" possible une seule fois.
 function handlers.register(req)
-  local name = req.name
-  if type(name) ~= "string" or #name == 0 or #name > 24 or not name:match("^[%w_%-]+$") then
-    return { ok = false, error = "Identifiant invalide (lettres, chiffres, _ et -, 24 max)" }
+  if not validName(req.cname) then
+    return deny("Identifiant invalide (lettres, chiffres, _ et -, 24 max)")
   end
-  if type(req.password) ~= "string" or #req.password < 4 then
-    return { ok = false, error = "Mot de passe trop court (4 caracteres minimum)" }
+  if not validPassword(req.cpass) then
+    return deny("Mot de passe trop court (4 caracteres minimum)")
   end
-  if users[name] then
-    return { ok = false, error = "Cet identifiant existe deja" }
+  if computers[req.cname] then
+    return deny("Cet identifiant existe deja")
   end
-  local salt = newSalt()
-  users[name] = { salt = salt, hash = hashPassword(salt, req.password) }
-  writeFile(USERS_FILE, users)
-  return { ok = true }
+  local wantAdmin = req.role == "admin"
+  if wantAdmin then
+    for _, c in pairs(computers) do
+      if c.admin then
+        return deny("Un ordinateur d'administration existe deja")
+      end
+    end
+  end
+  local entry = makeEntry(req.cpass)
+  entry.admin = wantAdmin
+  computers[req.cname] = entry
+  writeFile(COMPUTERS_FILE, computers)
+  return { ok = true, admin = wantAdmin }
 end
 
 function handlers.login(req)
-  local ok, err = authenticate(req.name, req.password)
-  if not ok then return { ok = false, error = err } end
+  if not isComputer(req) then
+    return deny("Ordinateur inconnu ou mot de passe incorrect")
+  end
+  return { ok = true, admin = computers[req.cname].admin == true }
+end
+
+function handlers.verifyAdmin(req)
+  if not isAdmin(req) then
+    return deny("Acces reserve a l'administrateur")
+  end
   return { ok = true }
 end
 
-function handlers.list()
+function handlers.userLogin(req)
+  if not isComputer(req) then
+    return deny("Ordinateur non enregistre")
+  end
+  if not isUser(req) then
+    return deny("Identifiant ou mot de passe incorrect")
+  end
+  return { ok = true }
+end
+
+function handlers.list(req)
+  if not canUseArchives(req) then return denyNoAccess() end
   return { ok = true, docs = listDocs() }
 end
 
 function handlers.get(req)
+  if not canUseArchives(req) then return denyNoAccess() end
   local doc = loadDoc(req.id)
-  if not doc then return { ok = false, error = "Archive introuvable" } end
+  if not doc then return deny("Archive introuvable") end
   return { ok = true, doc = doc }
 end
 
--- Etape 1 : on nomme le document et on indique l'identifiant de son coffre
+-- Etape 1 : nom + identifiant du coffre
 function handlers.create(req)
-  local ok, err = authenticate(req.name, req.password)
-  if not ok then return { ok = false, error = err } end
+  if not canUseArchives(req) then return denyNoAccess() end
   if type(req.title) ~= "string" or #req.title == 0 then
-    return { ok = false, error = "Nom de l'archive requis" }
+    return deny("Nom de l'archive requis")
   end
   if type(req.chest) ~= "string" or #req.chest == 0 then
-    return { ok = false, error = "Identifiant du coffre requis" }
+    return deny("Identifiant du coffre requis")
   end
   local doc = {
     id = nextId(), title = req.title, chest = req.chest,
-    owner = req.name, created = now(), updated = now(), lines = {},
+    owner = req.cname, author = req.uname or req.cname,
+    created = now(), updated = now(), lines = {},
   }
   saveDoc(doc)
   return { ok = true, id = doc.id }
 end
 
--- Etape 2 : on ecrit le contenu (remplace les lignes)
+-- Etape 2 : contenu (remplace les lignes)
 function handlers.write(req)
-  local ok, err = authenticate(req.name, req.password)
-  if not ok then return { ok = false, error = err } end
+  if not canUseArchives(req) then return denyNoAccess() end
   local doc = loadDoc(req.id)
-  if not doc then return { ok = false, error = "Archive introuvable" } end
+  if not doc then return deny("Archive introuvable") end
   if type(req.lines) ~= "table" then
-    return { ok = false, error = "Contenu invalide" }
+    return deny("Contenu invalide")
   end
   doc.lines = {}
   for i, line in ipairs(req.lines) do
@@ -221,16 +293,76 @@ function handlers.write(req)
   return { ok = true }
 end
 
--- Suppression : mot de passe administrateur de l'ordinateur ET proprietaire du document
+-- Suppression : l'administrateur peut tout supprimer ;
+-- un ordinateur ne supprime que les archives qu'il a creees.
 function handlers.delete(req)
-  local ok, err = authenticate(req.name, req.password)
-  if not ok then return { ok = false, error = err } end
   local doc = loadDoc(req.id)
-  if not doc then return { ok = false, error = "Archive introuvable" } end
-  if doc.owner ~= req.name then
-    return { ok = false, error = "Seul l'ordinateur qui a cree l'archive peut la supprimer" }
+  if not doc then return deny("Archive introuvable") end
+  local allowed = isAdmin(req) or (canUseArchives(req) and doc.owner == req.cname)
+  if not allowed then
+    return deny("Seul l'ordinateur qui a cree l'archive ou l'administrateur peut la supprimer")
   end
   fs.delete(docPath(doc.id))
+  return { ok = true }
+end
+
+-- ---------------------------------------------------------------- utilisateurs (admin)
+
+function handlers.userList(req)
+  local e = requireAdmin(req)
+  if e then return e end
+  local names = {}
+  for name in pairs(users) do table.insert(names, name) end
+  table.sort(names)
+  return { ok = true, users = names }
+end
+
+function handlers.userCreate(req)
+  local e = requireAdmin(req)
+  if e then return e end
+  if not validName(req.target) then
+    return deny("Identifiant utilisateur invalide")
+  end
+  if not validPassword(req.password) then
+    return deny("Mot de passe trop court (4 caracteres minimum)")
+  end
+  if users[req.target] then
+    return deny("Cet utilisateur existe deja")
+  end
+  users[req.target] = makeEntry(req.password)
+  writeFile(USERS_FILE, users)
+  return { ok = true }
+end
+
+function handlers.userUpdate(req)
+  local e = requireAdmin(req)
+  if e then return e end
+  local entry = users[req.target]
+  if not entry then return deny("Utilisateur introuvable") end
+  local finalName = req.target
+  if req.newName and req.newName ~= req.target then
+    if not validName(req.newName) then return deny("Nouvel identifiant invalide") end
+    if users[req.newName] then return deny("Cet identifiant existe deja") end
+    finalName = req.newName
+  end
+  if req.password then
+    if not validPassword(req.password) then
+      return deny("Mot de passe trop court (4 caracteres minimum)")
+    end
+    entry = makeEntry(req.password)
+  end
+  users[req.target] = nil
+  users[finalName] = entry
+  writeFile(USERS_FILE, users)
+  return { ok = true }
+end
+
+function handlers.userDelete(req)
+  local e = requireAdmin(req)
+  if e then return e end
+  if not users[req.target] then return deny("Utilisateur introuvable") end
+  users[req.target] = nil
+  writeFile(USERS_FILE, users)
   return { ok = true }
 end
 
@@ -238,11 +370,11 @@ end
 
 local function handle(req)
   if type(req) ~= "table" or type(req.action) ~= "string" or not handlers[req.action] then
-    return { ok = false, error = "Requete inconnue" }
+    return deny("Requete inconnue")
   end
   local ok, res = pcall(handlers[req.action], req)
   if not ok then
-    return { ok = false, error = "Erreur serveur : " .. tostring(res) }
+    return deny("Erreur serveur : " .. tostring(res))
   end
   return res
 end
@@ -257,17 +389,29 @@ local function openModem()
   error("Aucun modem detecte. Installe un modem sans fil.")
 end
 
-if checkUpdate() then return end
+-- Version 1.x : users.dat contenait les ordinateurs. On les deplace dans computers.dat.
+local function migrate()
+  if not fs.exists(COMPUTERS_FILE) and fs.exists(USERS_FILE) then
+    local old = readFile(USERS_FILE, {})
+    for _, c in pairs(old) do c.admin = false end
+    writeFile(COMPUTERS_FILE, old)
+    writeFile(USERS_FILE, {})
+    print("Migration : anciens ordinateurs convertis.")
+  end
+end
 
+checkUpdate(false)
 ensureDirs()
+migrate()
+computers = readFile(COMPUTERS_FILE, {})
 users = readFile(USERS_FILE, {})
 local side = openModem()
 rednet.host(PROTOCOL, HOST_NAME)
-print("cc-archiver serveur demarre (modem : " .. side .. ")")
-print("Ctrl+T pour arreter.")
+print("cc-archiver serveur " .. VERSION .. " demarre (modem : " .. side .. ")")
 
 while true do
   local sender, msg = rednet.receive(PROTOCOL)
   local res = handle(msg)
+  if type(msg) == "table" then res.rid = msg.rid end
   rednet.send(sender, res, PROTOCOL)
 end

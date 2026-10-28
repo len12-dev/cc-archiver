@@ -4,13 +4,15 @@
 
 local BASE = "https://raw.githubusercontent.com/len12-dev/cc-archiver/main/"
 local FILES = {
-  ["1"] = { name = "serveur", path = "server/server.lua", target = "/cc-archiver-server.lua" },
-  ["2"] = { name = "client",  path = "client/client.lua", target = "/cc-archiver-client.lua" },
+  ["1"] = { path = "server/server.lua", target = "/cc-archiver-server.lua" },
+  ["2"] = { path = "client/client.lua", target = "/cc-archiver-client.lua" },
+  ["3"] = { path = "admin/admin.lua",   target = "/cc-archiver-admin.lua" },
 }
 
 print("cc-archiver - installation")
 print("1. Serveur (EliteCompute)")
 print("2. Client (ordinateur avance)")
+print("3. Ordinateur d'administration")
 write("Choix : ")
 local choice = read()
 local entry = FILES[choice]
@@ -39,4 +41,4 @@ s.write('shell.run("' .. entry.target .. '")\n')
 s.close()
 
 print("Installe : " .. entry.target)
-print("Redemarre l'ordinateur (Ctrl+R) ou tape : " .. entry.target)
+print("Redemarre l'ordinateur (Ctrl+R) pour lancer le programme.")

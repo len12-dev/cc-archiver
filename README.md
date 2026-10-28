@@ -1,66 +1,73 @@
 # cc-archiver
 
-Système d'archives pour **CC: Tweaked** (ComputerCraft) : un serveur qui stocke les documents et des clients (ordinateurs avancés) qui les lisent et les écrivent. Chaque archive garde l'emplacement réel dans Minecraft (identifiant de coffre).
+Systeme d'archives pour **CC: Tweaked** (ComputerCraft). Un serveur stocke les documents, des ordinateurs avances les lisent et les ecrivent, et un ordinateur d'administration gere le tout. Chaque archive garde l'emplacement reel dans Minecraft (identifiant de coffre).
 
 ```
-[Client] Advanced Computer  ──(modem sans fil, rednet)──  [Serveur] EliteCompute
+[Client] Ordinateur avance ──┐
+                             ├── (modem sans fil) ── [Serveur] EliteCompute
+[Admin]  Ordinateur admin  ──┘
 ```
 
 ## Installation
 
-### Serveur (EliteCompute)
-Prérequis : un modem sans fil (ou filaire relié au réseau).
+Sur chaque ordinateur, avec un modem sans fil :
 
 ```
 wget run https://raw.githubusercontent.com/len12-dev/cc-archiver/main/install.lua
 ```
-Choisis `1`, puis redémarre. Les données sont dans `/archives/`.
 
-### Client (ordinateur avancé)
-Prérequis : un modem sans fil dans portée du serveur.
+Choisis le role (1 serveur, 2 client, 3 administration), puis redemarre.
 
-```
-wget run https://raw.githubusercontent.com/len12-dev/cc-archiver/main/install.lua
-```
-Choisis `2`, puis redémarre.
+- **Premiere connexion d'un client** : identifiant de l'ordinateur + mot de passe administrateur de cet ordinateur.
+- **Premiere connexion de l'administration** : elle devient l'ordinateur d'administration. Il n'y en a qu'un.
 
-**Première connexion** : tu définis l'identifiant de l'ordinateur et son mot de passe administrateur. Les connexions suivantes demandent seulement le mot de passe.
+## Utilisateurs
 
-## Utilisation
+Lire, creer et modifier une archive demandent un **identifiant utilisateur**, cree par l'administrateur (menu 6). Un ordinateur client ne fonctionne donc qu'avec un ordinateur enregistre **et** un utilisateur connecte.
 
-| Touche | Action |
-|---|---|
-| 1 | Lister les archives |
-| 2 | Lire une archive |
-| 3 | Nouvelle archive : nom, puis identifiant du coffre, puis texte (`/fin` pour terminer) |
-| 4 | Modifier : ajouter à la fin, ou tout réécrire |
-| 5 | Supprimer (mot de passe administrateur + confirmation `SUPPRIMER`) |
+## Droits
 
-## Règles d'accès
+| Action | Utilisateur (client) | Administration |
+|---|---|---|
+| Lister, lire | oui | oui |
+| Creer, modifier une archive | oui | oui (librement) |
+| Supprimer une archive | seulement celles de son ordinateur | oui (librement) |
+| Gerer les utilisateurs | non | oui |
+| Connexion a distance | non | oui |
 
-- Tout ordinateur enregistré peut **créer et modifier** des archives.
-- **Supprimer** exige le mot de passe administrateur de l'ordinateur **et** être l'ordinateur qui a créé l'archive.
+## Connexion a distance
 
-## Sécurité
+Depuis l'administration (menu 7), on liste les ordinateurs du reseau et on peut :
+- afficher leur etat (nom, version, utilisateur connecte) ;
+- les redemarrer.
 
-Le hash des mots de passe est maison et salé. Il suffit pour un réseau de jeu, mais ce n'est **pas cryptographique**. Les mots de passe transitent en clair sur le réseau sans fil de Minecraft. Ne réutilise pas un mot de passe important.
+Ce n'est **pas** un shell a distance. Un client ne peut executer que ces deux commandes, et seulement pour l'administrateur.
+
+## Mises a jour
+
+- Automatiques : au demarrage, chaque programme verifie la version sur le depot et se met a jour si besoin.
+- Manuelles : option **Mise a jour** dans le menu.
+
+Pour publier une mise a jour : augmenter `VERSION` dans le fichier concerne, puis pousser sur `main`.
+
+## Securite
+
+Le hash des mots de passe est maison et sale. Il suffit pour un reseau de jeu, mais il n'est **pas cryptographique**. Les mots de passe transitent en clair sur le reseau sans fil. Ne reutilise pas un mot de passe important.
 
 ## Structure
 
 ```
-server/server.lua   serveur (archives + comptes)
-client/client.lua   client (interface terminal)
+server/server.lua   serveur (archives, ordinateurs, utilisateurs)
+client/client.lua   ordinateur client
+admin/admin.lua     ordinateur d'administration
 install.lua         installateur
 ```
 
-## Données serveur
+## Donnees serveur
 
-- `/archives/docs/<id>.dat` : une archive (nom, coffre, auteur, lignes)
-- `/archives/users.dat` : comptes (sel + hash)
+- `/archives/docs/<id>.dat` : une archive
+- `/archives/computers.dat` : ordinateurs enregistres (sel, hash, admin)
+- `/archives/users.dat` : utilisateurs (sel, hash)
 - `/archives/counter.dat` : prochain identifiant
 
-## Mises à jour automatiques
-
-Au démarrage, serveur et client vérifient la version sur le dépôt. Si une version plus récente existe, elle est téléchargée, installée et relancée automatiquement. Sans connexion, le programme démarre avec la version locale.
-
-Pour publier une mise à jour : changer `VERSION` dans `server/server.lua` et/ou `client/client.lua`, puis pousser sur `main`.
+Une installation en 1.x est convertie automatiquement au premier demarrage.
