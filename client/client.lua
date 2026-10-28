@@ -1,12 +1,49 @@
 -- cc-archiver : CLIENT
--- À lancer sur un ordinateur avancé (Advanced Computer) avec un modem sans fil.
+-- A lancer sur un ordinateur avance (Advanced Computer) avec un modem sans fil.
+
+-- ---------------------------------------------------------------- mise a jour
+
+local VERSION = "1.1.0"
+local RAW_URL = "https://raw.githubusercontent.com/len12-dev/cc-archiver/main/client/client.lua"
+
+-- Telecharge la version du depot ; si elle est plus recente, remplace ce fichier et relance.
+-- Retourne true si le programme a ete mis a jour (le script courant doit alors s'arreter).
+local function checkUpdate()
+  local own = shell.resolve(shell.getRunningProgram())
+  local res = http.get(RAW_URL .. "?t=" .. os.epoch("utc"))
+  if not res then
+    print("Pas de connexion au depot, version " .. VERSION .. " conservee.")
+    sleep(1)
+    return false
+  end
+  local code = res.readAll()
+  res.close()
+  local remote = code:match('local VERSION%s*=%s*"([^"]+)"')
+  if not remote or remote == VERSION then return false end
+  if not load(code) then
+    print("Mise a jour " .. remote .. " invalide, ignoree.")
+    sleep(2)
+    return false
+  end
+  print("Mise a jour " .. VERSION .. " -> " .. remote .. "...")
+  local tmp = own .. ".new"
+  local h = fs.open(tmp, "w")
+  h.write(code)
+  h.close()
+  fs.delete(own)
+  fs.move(tmp, own)
+  print("Installee. Lancement...")
+  sleep(1)
+  shell.run(own)
+  return true
+end
 
 local PROTOCOL  = "cc-archiver"
 local HOST_NAME = "cc-archiver-server"
 local CONFIG    = "/archives-client.cfg"
 local TIMEOUT   = 5
 
-local cfg = {}      -- { name = "..." }  (le mot de passe n'est jamais stocké)
+local cfg = {}      -- { name = "..." }  (le mot de passe n'est jamais stocke)
 local session = nil -- { name = "...", password = "..." } pour la session en cours
 
 -- ---------------------------------------------------------------- utilitaires
@@ -48,22 +85,22 @@ end
 
 local function pause()
   print("")
-  write("Entrée pour continuer...")
+  write("Entree pour continuer...")
   read()
 end
 
--- Envoie une requête au serveur et attend la réponse
+-- Envoie une requete au serveur et attend la reponse
 local function request(action, data)
   local serverId = rednet.lookup(PROTOCOL, HOST_NAME)
   if not serverId then
-    return nil, "Serveur introuvable (serveur allumé ? modems sans fil ?)"
+    return nil, "Serveur introuvable (serveur allume ? modems sans fil ?)"
   end
   data = data or {}
   data.action = action
   rednet.send(serverId, data, PROTOCOL)
   local _, res = rednet.receive(PROTOCOL, TIMEOUT)
   if not res then
-    return nil, "Pas de réponse du serveur"
+    return nil, "Pas de reponse du serveur"
   end
   if not res.ok then
     return nil, res.error or "Erreur inconnue"
@@ -71,10 +108,10 @@ local function request(action, data)
   return res
 end
 
--- Lit des lignes jusqu'à /fin (ajoute à la table fournie)
+-- Lit des lignes jusqu'a /fin (ajoute a la table fournie)
 local function readLines(lines)
   lines = lines or {}
-  print("Écris ton texte. Tape /fin seul sur une ligne pour terminer.")
+  print("Ecris ton texte. Tape /fin seul sur une ligne pour terminer.")
   while true do
     local l = read()
     if l == "/fin" then break end
@@ -85,13 +122,13 @@ end
 
 -- ---------------------------------------------------------------- connexion
 
--- Première connexion : identifiant de l'ordinateur + mot de passe administrateur
--- Connexions suivantes : mot de passe demandé
+-- Premiere connexion : identifiant de l'ordinateur + mot de passe administrateur
+-- Connexions suivantes : mot de passe demande
 local function connect()
   while true do
     clear()
     if not cfg.name then
-      print("=== Première connexion de cet ordinateur ===")
+      print("=== Premiere connexion de cet ordinateur ===")
       local name = ask("Identifiant de l'ordinateur : ")
       local pw   = ask("Mot de passe administrateur : ", true)
       local pw2  = ask("Confirme le mot de passe : ", true)
@@ -141,9 +178,9 @@ end
 
 local function readDoc()
   clear()
-  write("Numéro de l'archive : ")
+  write("Numero de l'archive : ")
   local id = tonumber(read())
-  if not id then print("Numéro invalide.") pause() return end
+  if not id then print("Numero invalide.") pause() return end
   local res, err = request("get", { id = id })
   if not res then
     print("Erreur : " .. err)
@@ -175,27 +212,27 @@ local function createDoc()
     name = session.name, password = session.password, title = title, chest = chest,
   })
   if not res then print("Erreur : " .. err) pause() return end
-  -- 3. on peut maintenant écrire
+  -- 3. on peut maintenant ecrire
   local lines = readLines()
   local w, werr = request("write", {
     name = session.name, password = session.password, id = res.id, lines = lines,
   })
   if w then
-    print("Archive #" .. res.id .. " créée.")
+    print("Archive #" .. res.id .. " creee.")
   else
-    print("Archive #" .. res.id .. " créée, mais contenu non enregistré : " .. werr)
+    print("Archive #" .. res.id .. " creee, mais contenu non enregistre : " .. werr)
   end
   pause()
 end
 
 local function editDoc()
   clear()
-  write("Numéro de l'archive à modifier : ")
+  write("Numero de l'archive a modifier : ")
   local id = tonumber(read())
-  if not id then print("Numéro invalide.") pause() return end
+  if not id then print("Numero invalide.") pause() return end
   local res, err = request("get", { id = id })
   if not res then print("Erreur : " .. err) pause() return end
-  print("1 = ajouter à la fin   2 = tout réécrire   autre = annuler")
+  print("1 = ajouter a la fin   2 = tout reecrire   autre = annuler")
   local choice = read()
   local lines
   if choice == "1" then
@@ -208,20 +245,20 @@ local function editDoc()
   local w, werr = request("write", {
     name = session.name, password = session.password, id = id, lines = lines,
   })
-  print(w and "Archive mise à jour." or ("Erreur : " .. werr))
+  print(w and "Archive mise a jour." or ("Erreur : " .. werr))
   pause()
 end
 
 local function deleteDoc()
   clear()
-  write("Numéro de l'archive à supprimer : ")
+  write("Numero de l'archive a supprimer : ")
   local id = tonumber(read())
-  if not id then print("Numéro invalide.") pause() return end
+  if not id then print("Numero invalide.") pause() return end
   local pw = ask("Mot de passe administrateur : ", true)
   write("Tape SUPPRIMER pour confirmer : ")
-  if read() ~= "SUPPRIMER" then print("Annulé.") pause() return end
+  if read() ~= "SUPPRIMER" then print("Annule.") pause() return end
   local res, err = request("delete", { name = session.name, password = pw, id = id })
-  print(res and "Archive supprimée." or ("Erreur : " .. err))
+  print(res and "Archive supprimee." or ("Erreur : " .. err))
   pause()
 end
 
@@ -251,9 +288,11 @@ end
 
 -- ---------------------------------------------------------------- main
 
+if checkUpdate() then return end
+
 loadCfg()
 if not openModem() then
-  print("Aucun modem détecté. Installe un modem sans fil.")
+  print("Aucun modem detecte. Installe un modem sans fil.")
   return
 end
 connect()

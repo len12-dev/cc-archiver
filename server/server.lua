@@ -1,6 +1,43 @@
 -- cc-archiver : SERVEUR
--- À installer sur l'ordinateur EliteCompute (avec un modem sans fil).
+-- A installer sur l'ordinateur EliteCompute (avec un modem sans fil).
 -- Stocke les archives dans /archives/docs/ et les comptes dans /archives/users.dat
+
+-- ---------------------------------------------------------------- mise a jour
+
+local VERSION = "1.1.0"
+local RAW_URL = "https://raw.githubusercontent.com/len12-dev/cc-archiver/main/server/server.lua"
+
+-- Telecharge la version du depot ; si elle est plus recente, remplace ce fichier et relance.
+-- Retourne true si le programme a ete mis a jour (le script courant doit alors s'arreter).
+local function checkUpdate()
+  local own = shell.resolve(shell.getRunningProgram())
+  local res = http.get(RAW_URL .. "?t=" .. os.epoch("utc"))
+  if not res then
+    print("Pas de connexion au depot, version " .. VERSION .. " conservee.")
+    sleep(1)
+    return false
+  end
+  local code = res.readAll()
+  res.close()
+  local remote = code:match('local VERSION%s*=%s*"([^"]+)"')
+  if not remote or remote == VERSION then return false end
+  if not load(code) then
+    print("Mise a jour " .. remote .. " invalide, ignoree.")
+    sleep(2)
+    return false
+  end
+  print("Mise a jour " .. VERSION .. " -> " .. remote .. "...")
+  local tmp = own .. ".new"
+  local h = fs.open(tmp, "w")
+  h.write(code)
+  h.close()
+  fs.delete(own)
+  fs.move(tmp, own)
+  print("Installee. Lancement...")
+  sleep(1)
+  shell.run(own)
+  return true
+end
 
 local PROTOCOL  = "cc-archiver"
 local HOST_NAME = "cc-archiver-server"
@@ -31,8 +68,8 @@ local function ensureDirs()
   if not fs.exists(DOCS_DIR) then fs.makeDir(DOCS_DIR) end
 end
 
--- Hash salé maison : suffisant pour un réseau local de Minecraft,
--- NON cryptographique (ne pas réutiliser ce mot de passe ailleurs).
+-- Hash sale maison : suffisant pour un reseau local de Minecraft,
+-- NON cryptographique (ne pas reutiliser ce mot de passe ailleurs).
 local function hashPassword(salt, password)
   local s = salt .. ":" .. password
   local h1, h2 = 5381, 0
@@ -114,17 +151,17 @@ function handlers.ping()
   return { ok = true }
 end
 
--- Première connexion d'un ordinateur : identifiant + mot de passe administrateur
+-- Premiere connexion d'un ordinateur : identifiant + mot de passe administrateur
 function handlers.register(req)
   local name = req.name
   if type(name) ~= "string" or #name == 0 or #name > 24 or not name:match("^[%w_%-]+$") then
     return { ok = false, error = "Identifiant invalide (lettres, chiffres, _ et -, 24 max)" }
   end
   if type(req.password) ~= "string" or #req.password < 4 then
-    return { ok = false, error = "Mot de passe trop court (4 caractères minimum)" }
+    return { ok = false, error = "Mot de passe trop court (4 caracteres minimum)" }
   end
   if users[name] then
-    return { ok = false, error = "Cet identifiant existe déjà" }
+    return { ok = false, error = "Cet identifiant existe deja" }
   end
   local salt = newSalt()
   users[name] = { salt = salt, hash = hashPassword(salt, req.password) }
@@ -148,7 +185,7 @@ function handlers.get(req)
   return { ok = true, doc = doc }
 end
 
--- Étape 1 : on nomme le document et on indique l'identifiant de son coffre
+-- Etape 1 : on nomme le document et on indique l'identifiant de son coffre
 function handlers.create(req)
   local ok, err = authenticate(req.name, req.password)
   if not ok then return { ok = false, error = err } end
@@ -166,7 +203,7 @@ function handlers.create(req)
   return { ok = true, id = doc.id }
 end
 
--- Étape 2 : on écrit le contenu (remplace les lignes)
+-- Etape 2 : on ecrit le contenu (remplace les lignes)
 function handlers.write(req)
   local ok, err = authenticate(req.name, req.password)
   if not ok then return { ok = false, error = err } end
@@ -184,14 +221,14 @@ function handlers.write(req)
   return { ok = true }
 end
 
--- Suppression : mot de passe administrateur de l'ordinateur ET propriétaire du document
+-- Suppression : mot de passe administrateur de l'ordinateur ET proprietaire du document
 function handlers.delete(req)
   local ok, err = authenticate(req.name, req.password)
   if not ok then return { ok = false, error = err } end
   local doc = loadDoc(req.id)
   if not doc then return { ok = false, error = "Archive introuvable" } end
   if doc.owner ~= req.name then
-    return { ok = false, error = "Seul l'ordinateur qui a créé l'archive peut la supprimer" }
+    return { ok = false, error = "Seul l'ordinateur qui a cree l'archive peut la supprimer" }
   end
   fs.delete(docPath(doc.id))
   return { ok = true }
@@ -201,7 +238,7 @@ end
 
 local function handle(req)
   if type(req) ~= "table" or type(req.action) ~= "string" or not handlers[req.action] then
-    return { ok = false, error = "Requête inconnue" }
+    return { ok = false, error = "Requete inconnue" }
   end
   local ok, res = pcall(handlers[req.action], req)
   if not ok then
@@ -217,15 +254,17 @@ local function openModem()
       return name
     end
   end
-  error("Aucun modem détecté. Installe un modem sans fil.")
+  error("Aucun modem detecte. Installe un modem sans fil.")
 end
+
+if checkUpdate() then return end
 
 ensureDirs()
 users = readFile(USERS_FILE, {})
 local side = openModem()
 rednet.host(PROTOCOL, HOST_NAME)
-print("cc-archiver serveur démarré (modem : " .. side .. ")")
-print("Ctrl+T pour arrêter.")
+print("cc-archiver serveur demarre (modem : " .. side .. ")")
+print("Ctrl+T pour arreter.")
 
 while true do
   local sender, msg = rednet.receive(PROTOCOL)

@@ -1,6 +1,6 @@
 -- cc-archiver : installateur
 -- Usage sur un ordinateur CC : wget run https://raw.githubusercontent.com/len12-dev/cc-archiver/main/install.lua
--- (le dépôt doit être public pour que ce lien fonctionne)
+-- (le depot doit etre public pour que ce lien fonctionne)
 
 local BASE = "https://raw.githubusercontent.com/len12-dev/cc-archiver/main/"
 local FILES = {
@@ -10,7 +10,7 @@ local FILES = {
 
 print("cc-archiver - installation")
 print("1. Serveur (EliteCompute)")
-print("2. Client (ordinateur avancé)")
+print("2. Client (ordinateur avance)")
 write("Choix : ")
 local choice = read()
 local entry = FILES[choice]
@@ -20,10 +20,10 @@ if not entry then
 end
 
 local url = BASE .. entry.path
-print("Téléchargement de " .. url)
+print("Telechargement de " .. url)
 local res, err = http.get(url)
 if not res then
-  print("Échec : " .. tostring(err))
+  print("Echec : " .. tostring(err))
   return
 end
 local code = res.readAll()
@@ -33,10 +33,10 @@ local h = fs.open(entry.target, "w")
 h.write(code)
 h.close()
 
--- Lancement automatique au démarrage
+-- Lancement automatique au demarrage
 local s = fs.open("/startup.lua", "w")
 s.write('shell.run("' .. entry.target .. '")\n')
 s.close()
 
-print("Installé : " .. entry.target)
-print("Redémarre l'ordinateur (Ctrl+R) ou tape : " .. entry.target)
+print("Installe : " .. entry.target)
+print("Redemarre l'ordinateur (Ctrl+R) ou tape : " .. entry.target)

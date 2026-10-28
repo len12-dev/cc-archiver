@@ -58,3 +58,9 @@ install.lua         installateur
 - `/archives/docs/<id>.dat` : une archive (nom, coffre, auteur, lignes)
 - `/archives/users.dat` : comptes (sel + hash)
 - `/archives/counter.dat` : prochain identifiant
+
+## Mises à jour automatiques
+
+Au démarrage, serveur et client vérifient la version sur le dépôt. Si une version plus récente existe, elle est téléchargée, installée et relancée automatiquement. Sans connexion, le programme démarre avec la version locale.
+
+Pour publier une mise à jour : changer `VERSION` dans `server/server.lua` et/ou `client/client.lua`, puis pousser sur `main`.
