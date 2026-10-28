@@ -2,7 +2,7 @@
 -- A installer sur l'ordinateur relie aux imprimantes (modem sans fil + imprimantes branchees).
 -- Le contenu n'est jamais pris du client : il est recupere sur le serveur avec un ticket a usage unique.
 
-local VERSION = "2.2.0"
+local VERSION = "2.3.0"
 local RAW_URL = "https://raw.githubusercontent.com/len12-dev/cc-archiver/main/print/print.lua"
 
 -- ---------------------------------------------------------------- mise a jour

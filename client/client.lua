@@ -2,7 +2,7 @@
 -- A lancer sur un ordinateur avance (Advanced Computer) avec un modem sans fil.
 -- Hors ligne : lecture du cache, ajouts mis en file d'attente, envoyes au retour du serveur.
 
-local VERSION = "2.2.0"
+local VERSION = "2.3.0"
 local RAW_URL = "https://raw.githubusercontent.com/len12-dev/cc-archiver/main/client/client.lua"
 
 -- ---------------------------------------------------------------- mise a jour
@@ -381,7 +381,7 @@ local function listDocs()
     print("")
   end
   for _, d in ipairs(cache.list) do
-    print(("[%d] %s  (coffre: %s, par: %s)"):format(d.id, d.title, tostring(d.chest), tostring(d.owner)))
+    print(("[%s] %s  (coffre: %s, par: %s)"):format(tostring(d.id), d.title, tostring(d.chest), tostring(d.owner)))
   end
   for _, op in ipairs(cache.queue) do
     if op.op == "create" then
@@ -402,8 +402,8 @@ local function readDoc()
     pause()
     return
   end
-  local id = tonumber(key)
-  if not id then print("Numero invalide.") pause() return end
+  local id = key
+  if id == "" then print("Numero invalide.") pause() return end
   local res, err = request("get", { id = id })
   if res then
     cache.docs[tostring(id)] = res.doc
@@ -468,8 +468,8 @@ local function editDoc()
     return
   end
 
-  local id = tonumber(key)
-  if not id then print("Numero invalide.") pause() return end
+  local id = key
+  if id == "" then print("Numero invalide.") pause() return end
   local res = request("get", { id = id })
   if res then
     cache.docs[tostring(id)] = res.doc
@@ -508,8 +508,8 @@ local function deleteDoc()
     return
   end
   write("Numero de l'archive a supprimer : ")
-  local id = tonumber(read())
-  if not id then print("Numero invalide.") pause() return end
+  local id = read()
+  if id == "" then print("Numero invalide.") pause() return end
   local mpass = ask("Mot de passe administrateur : ", true)
   write("Tape SUPPRIMER pour confirmer : ")
   if read() ~= "SUPPRIMER" then print("Annule.") pause() return end
@@ -549,8 +549,8 @@ local function printDoc()
     return
   end
   write("Numero de l'archive a imprimer : ")
-  local id = tonumber(read())
-  if not id then print("Numero invalide.") pause() return end
+  local id = read()
+  if id == "" then print("Numero invalide.") pause() return end
   local t, err = request("printRequest", { id = id })
   if not t then
     print("Erreur : " .. err)
@@ -576,8 +576,19 @@ end
 
 -- ---------------------------------------------------------------- attente et refus
 
+-- Recupere depuis le serveur les refus d'ajouts faits hors ligne par cet utilisateur
+local function syncRejects()
+  if offline then return end
+  local res = request("myRejects")
+  if res and type(res.rejects) == "table" then
+    for _, r in ipairs(res.rejects) do table.insert(cache.rejected, tostring(r)) end
+    saveCache()
+  end
+end
+
 local function conflictsMenu()
   clear()
+  syncRejects()
   print("=== En attente et refus ===")
   print("En attente d'envoi : " .. #cache.queue)
   for _, op in ipairs(cache.queue) do

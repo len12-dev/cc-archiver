@@ -2,7 +2,7 @@
 -- A installer sur l'ordinateur d'administration (avec un modem sans fil).
 -- Le programme n'a pas de sortie : il tourne en permanence.
 
-local VERSION = "2.2.0"
+local VERSION = "2.3.0"
 local RAW_URL = "https://raw.githubusercontent.com/len12-dev/cc-archiver/main/admin/admin.lua"
 
 -- ---------------------------------------------------------------- mise a jour
@@ -152,28 +152,64 @@ end
 
 -- ---------------------------------------------------------------- connexion
 
--- Premiere connexion : cet ordinateur devient l'administrateur (s'il n'y en a pas encore)
+-- Premiere connexion : administrateur central (serveur central) ou administrateur de zone (code)
+local function firstConnect()
+  clear()
+  print("=== Premiere connexion ===")
+  print("1. Administrateur central (serveur central)")
+  print("2. Administrateur de zone (code genere par le central)")
+  write("> ")
+  if read() == "2" then
+    print("")
+    local name = ask("Identifiant de l'ordinateur : ")
+    local code = ask("Code (genere par le central) : ")
+    local pw   = ask("Mot de passe maitre de la zone : ", true)
+    local pw2  = ask("Confirme le mot de passe : ", true)
+    if pw ~= pw2 then
+      print("Les mots de passe ne correspondent pas.")
+      sleep(2)
+      return
+    end
+    local res, err = request("pair", { cname = name, code = code, cpass = pw })
+    if res then
+      cfg.name = name
+      saveCfg()
+      session.cname = name
+      session.cpass = pw
+      return
+    end
+    print("Erreur : " .. err)
+    sleep(2)
+    return
+  end
+  print("")
+  local name = ask("Identifiant de l'ordinateur : ")
+  local pw   = ask("Mot de passe administrateur : ", true)
+  local pw2  = ask("Confirme le mot de passe : ", true)
+  if pw ~= pw2 then
+    print("Les mots de passe ne correspondent pas.")
+    sleep(2)
+    return
+  end
+  local res, err = request("register", { cname = name, cpass = pw, role = "admin" })
+  if res then
+    cfg.name = name
+    saveCfg()
+    session.cname = name
+    session.cpass = pw
+    return
+  end
+  print("Erreur : " .. err)
+  sleep(2)
+end
+
+-- Connexion : premiere fois, puis mot de passe administrateur
 local function connect()
   while true do
     clear()
     if not cfg.name then
-      print("=== Premiere connexion : ordinateur d'administration ===")
-      local name = ask("Identifiant de l'ordinateur : ")
-      local pw   = ask("Mot de passe administrateur : ", true)
-      local pw2  = ask("Confirme le mot de passe : ", true)
-      if pw ~= pw2 then
-        print("Les mots de passe ne correspondent pas.")
-      else
-        local res, err = request("register", { cname = name, cpass = pw, role = "admin" })
-        if res then
-          cfg.name = name
-          saveCfg()
-          session.cname = name
-          session.cpass = pw
-          return
-        end
-        print("Erreur : " .. err)
-      end
+      firstConnect()
+      if cfg.name then return end
     else
       print("=== Console d'administration ===")
       print("Ordinateur : " .. cfg.name)
@@ -211,8 +247,8 @@ end
 -- ---------------------------------------------------------------- archives
 
 local function showDoc(d, extra)
-  print(("== [%d] %s =="):format(d.id, d.title))
-  print("Coffre : " .. d.chest .. "   Ordinateur : " .. d.owner .. "   Auteur : " .. (d.author or "?"))
+  print(("== [%s] %s =="):format(tostring(d.id), d.title))
+  print("Coffre : " .. tostring(d.chest) .. "   Ordinateur : " .. tostring(d.owner) .. "   Auteur : " .. tostring(d.author or "?"))
   print("----------------------------")
   local text = table.concat(d.lines or {}, "\n")
   if text == "" then
@@ -231,7 +267,7 @@ local function listDocs()
     print("Aucune archive.")
   else
     for _, d in ipairs(res.docs) do
-      print(("[%d] %s  (coffre: %s, par: %s)"):format(d.id, d.title, d.chest, d.owner))
+      print(("[%s] %s  (coffre: %s, par: %s)"):format(tostring(d.id), d.title, tostring(d.chest), tostring(d.owner)))
     end
   end
   pause()
@@ -240,8 +276,8 @@ end
 local function readDoc()
   clear()
   write("Numero de l'archive : ")
-  local id = tonumber(read())
-  if not id then print("Numero invalide.") pause() return end
+  local id = read()
+  if id == "" then print("Numero invalide.") pause() return end
   local res, err = request("get", { id = id })
   if not res then
     print("Erreur : " .. err)
@@ -270,8 +306,8 @@ end
 local function editDoc()
   clear()
   write("Numero de l'archive a modifier : ")
-  local id = tonumber(read())
-  if not id then print("Numero invalide.") pause() return end
+  local id = read()
+  if id == "" then print("Numero invalide.") pause() return end
   local res, err = request("get", { id = id })
   if not res then print("Erreur : " .. err) pause() return end
   print("1 = ajouter a la fin   2 = tout reecrire   autre = annuler")
@@ -293,8 +329,8 @@ end
 local function deleteDoc()
   clear()
   write("Numero de l'archive a supprimer : ")
-  local id = tonumber(read())
-  if not id then print("Numero invalide.") pause() return end
+  local id = read()
+  if id == "" then print("Numero invalide.") pause() return end
   write("Tape SUPPRIMER pour confirmer : ")
   if read() ~= "SUPPRIMER" then print("Annule.") pause() return end
   local res, err = request("delete", { id = id })
@@ -323,8 +359,8 @@ end
 local function printDoc()
   clear()
   write("Numero de l'archive a imprimer : ")
-  local id = tonumber(read())
-  if not id then print("Numero invalide.") pause() return end
+  local id = read()
+  if id == "" then print("Numero invalide.") pause() return end
   local t, err = request("printRequest", { id = id })
   if not t then
     print("Erreur : " .. err)
@@ -458,23 +494,66 @@ end
 
 -- ---------------------------------------------------------------- enregistrement
 
+local KIND_LABELS = {
+  client = "ordinateur client",
+  print = "serveur d'impression",
+  zoneadmin = "administrateur de zone",
+  zone = "serveur de zone",
+}
+
+-- Codes : client et impression (zone de ce serveur). Central seulement : admin de zone et serveur de zone.
 local function pairingCode()
   clear()
+  local central = request("zoneList") ~= nil
   print("Quel type d'ordinateur ?")
   print("1. Ordinateur client")
   print("2. Serveur d'impression")
+  if central then
+    print("3. Administrateur de zone")
+    print("4. Serveur de zone (nouvelle zone)")
+  end
   write("> ")
-  local kind = (read() == "2") and "print" or "client"
-  local res, err = request("pairCode", { kind = kind })
+  local c = read()
+  local kind = ({ ["1"] = "client", ["2"] = "print", ["3"] = "zoneadmin", ["4"] = "zone" })[c]
+  if not kind or ((kind == "zoneadmin" or kind == "zone") and not central) then
+    print("Choix invalide.")
+    sleep(2)
+    return
+  end
+  local data = { kind = kind }
+  if central and (kind == "zoneadmin" or kind == "zone") then
+    write("Code de zone (majuscules et chiffres) : ")
+    data.zone = read()
+  elseif central then
+    write("Zone (vide = zone de ce serveur) : ")
+    local z = read()
+    if z ~= "" then data.zone = z end
+  end
+  local res, err = request("pairCode", data)
   clear()
   if not res then
     print("Erreur : " .. err)
   else
     print("Code d'enregistrement : " .. res.code)
     print("")
-    print("Type : " .. (kind == "print" and "serveur d'impression" or "ordinateur client"))
+    print("Type : " .. KIND_LABELS[kind] .. "   Zone : " .. tostring(res.zone))
     print("Valable 5 minutes.")
     print("Sur le nouvel ordinateur, entre son identifiant et ce code.")
+  end
+  pause()
+end
+
+-- Liste des zones (administrateur central seulement)
+local function zonesMenu()
+  clear()
+  local res, err = request("zoneList")
+  if not res then
+    print("Erreur : " .. err)
+  elseif #res.zones == 0 then
+    print("Aucune zone.")
+  else
+    print("Zones :")
+    for _, z in ipairs(res.zones) do print(" - " .. z) end
   end
   pause()
 end
@@ -560,6 +639,7 @@ local function menu()
     print("9. Code d'enregistrement")
     print("A. Journal du serveur")
     print("P. Imprimer une archive")
+    print("Z. Zones (central)")
     print("0. Verrouiller")
     write("> ")
     local c = read()
@@ -574,6 +654,7 @@ local function menu()
     elseif c == "9" then pairingCode()
     elseif c == "A" or c == "a" then journalMenu()
     elseif c == "P" or c == "p" then printDoc()
+    elseif c == "Z" or c == "z" then zonesMenu()
     elseif c == "0" then lockConsole()
     end
   end
